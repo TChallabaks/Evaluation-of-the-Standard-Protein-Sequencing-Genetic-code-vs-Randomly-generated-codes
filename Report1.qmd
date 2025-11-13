@@ -14,9 +14,9 @@ execute:
   message: false
     
 # Report1.R
-# A Comprehensive Genetic Evaluation: Comparison between Standard Genetic Protein Sequencing DNA codes and randomly generated Protein Sequencing DNA codes
+# A Comprehensive Genetic Evaluation: Comparison between Standard Genetic Protein Sequencing DNA codes and randomly generated Protein Sequencing DNA codes. Plus a Stimulated Annealing computational experiment that shows the SGC can be improved.
 # Author: Olatunde Kudus Bakare
-# Date: 2025-10-12
+# Date: 2025-11-12
 ###############################################################
 
 ```{r}
@@ -540,5 +540,260 @@ cat(sprintf("\nCentroid distance between standard and random PCA spaces: %.3f\n"
 save.image(file = "genetic_evaluation_workspace.RData")
 cat("Analysis complete. All results and visualizations saved.\n")
 ```
-# Conclusion,from the result of comparing the Benchmark (SGC) cost = 9856.116, to the Mean random code cost = 14294.060. With a SD random code cost   = 299.676. The functions of the program was able to computed that the randomly generated protein sequencing codes better than the Standard Genetic Code = 0.000. Which means that the naturally formed Standard Genetic Code is arranged in a way that results in the least amount of mutations, making it the most efficient naturally assembled nanomachine.
+```{r}
+# ==================== 13. Simulated Annealing Optimization ====================
+cat("Starting Simulated Annealing (Mode A: fixed STOPs, preserve degeneracy)...\n")
+
+# --- Quick sanity checks based on earlier sections --------------------------------
+stopifnot(exists("SGC_sense"), exists("A_ids"), exists("edge_i"), exists("edge_j"),
+          exists("edge_is_ts"), exists("alpha"), exists("aa_dist"))
+stopifnot(length(A_ids) == nrow(SGC_sense))  # 61
+
+# Ensure AA distance matrix names are uppercase one-letter codes and square
+aa_rn <- toupper(rownames(aa_dist))
+aa_cn <- toupper(colnames(aa_dist))
+stopifnot(!is.null(aa_rn), !is.null(aa_cn), length(aa_rn) == length(aa_cn))
+stopifnot(all(aa_rn == aa_cn))
+rownames(aa_dist) <- aa_rn
+colnames(aa_dist) <- aa_cn
+
+# Weight per directed edge: 1 for transitions, alpha for transversions
+w_edge <- ifelse(edge_is_ts, 1.0, alpha)
+
+# For each codon position (1..61), which directed edges touch it?
+touch_list <- lapply(seq_along(A_ids), function(k) which(edge_i == k | edge_j == k))
+
+# Map AA labels (one-letter) to integer indices in aa_dist (1..20)
+labels_to_idx <- function(labels) {
+  idx <- match(toupper(labels), aa_rn)
+  if (any(is.na(idx))) {
+    missing <- unique(labels[is.na(idx)])
+    stop(sprintf("Unknown AA label(s) encountered: %s", paste(missing, collapse = ", ")))
+  }
+  idx
+}
+
+# Full cost for a given integer labeling (indices into aa_dist)
+cost_full <- function(label_idx) {
+  d <- aa_dist[cbind(label_idx[edge_i], label_idx[edge_j])]
+  sum(w_edge * d)
+}
+
+# ---------- SA core (swap two codon positions; degeneracy preserved) ----------
+sa_optimize_code <- function(
+  A_labels,                   # char vector length 61, one-letter AA labels
+  iters      = 200000L,       # total iterations
+  T0         = NULL,          # initial temperature; if NULL, auto-calibrate
+  Tf         = 1e-3,          # temperature floor
+  alpha_cool = 0.9995,        # geometric cooling factor
+  seed       = 42L,
+  report_every = 2000L
+) {
+  set.seed(seed)
+
+  n <- length(A_labels)
+  stopifnot(n == length(touch_list))
+
+  # Current state (as indices)
+  lab_idx <- labels_to_idx(A_labels)
+  cur_cost <- cost_full(lab_idx)
+
+  best_idx  <- lab_idx
+  best_cost <- cur_cost
+
+  # --- Auto-calibrate T0 to accept ~80% of uphill moves initially --------------
+  if (is.null(T0)) {
+    trials <- min(300L, iters)
+    deltas <- numeric(0L)
+    for (t in seq_len(trials)) {
+      p <- sample.int(n, 1L)
+      q <- sample.int(n, 1L)
+      if (p == q) next
+      idx_aff <- union(touch_list[[p]], touch_list[[q]])
+
+      # old contribution on affected edges
+      d_old <- aa_dist[cbind(lab_idx[edge_i[idx_aff]], lab_idx[edge_j[idx_aff]])]
+      old_sum <- sum(w_edge[idx_aff] * d_old)
+
+      # apply swap
+      lab_idx[c(p, q)] <- lab_idx[c(q, p)]
+
+      d_new <- aa_dist[cbind(lab_idx[edge_i[idx_aff]], lab_idx[edge_j[idx_aff]])]
+      new_sum <- sum(w_edge[idx_aff] * d_new)
+
+      # revert
+      lab_idx[c(p, q)] <- lab_idx[c(q, p)]
+
+      deltas <- c(deltas, new_sum - old_sum)
+    }
+    uphill <- deltas[deltas > 0]
+    T0 <- if (length(uphill) >= 5) -mean(uphill) / log(0.8) else 1.0
+  }
+
+  # Reset to initial labeling after calibration
+  lab_idx <- labels_to_idx(A_labels)
+  cur_cost <- cost_full(lab_idx)
+  best_idx <- lab_idx
+  best_cost <- cur_cost
+  T <- T0
+
+  n_accept <- 0L
+  history <- tibble::tibble(step = integer(), best_cost = numeric(), T = numeric(), accepted = integer())
+
+  for (k in seq_len(iters)) {
+    # Propose: swap two codon positions (keeps AA multiset -> degeneracy preserved)
+    p <- sample.int(n, 1L)
+    q <- sample.int(n, 1L)
+    if (p == q) next
+
+    idx_aff <- union(touch_list[[p]], touch_list[[q]])
+
+    # Old contribution on affected edges
+    d_old <- aa_dist[cbind(lab_idx[edge_i[idx_aff]], lab_idx[edge_j[idx_aff]])]
+    old_sum <- sum(w_edge[idx_aff] * d_old)
+
+    # Apply swap locally
+    lab_idx[c(p, q)] <- lab_idx[c(q, p)]
+
+    # New contribution on affected edges
+    d_new <- aa_dist[cbind(lab_idx[edge_i[idx_aff]], lab_idx[edge_j[idx_aff]])]
+    new_sum <- sum(w_edge[idx_aff] * d_new)
+
+    delta <- new_sum - old_sum
+
+    accept <- (delta <= 0) || (runif(1) < exp(-delta / max(T, .Machine$double.eps)))
+    if (accept) {
+      cur_cost <- cur_cost + delta
+      n_accept <- n_accept + 1L
+      if (cur_cost < best_cost) {
+        best_cost <- cur_cost
+        best_idx  <- lab_idx
+      }
+    } else {
+      # Revert swap
+      lab_idx[c(p, q)] <- lab_idx[c(q, p)]
+    }
+
+    # Cooling
+    T <- max(T * alpha_cool, Tf)
+
+    # Lightweight logging
+    if (k %% report_every == 0L) {
+      history <- dplyr::add_row(history, step = k, best_cost = best_cost, T = T, accepted = n_accept)
+      n_accept <- 0L
+    }
+  }
+
+  list(
+    best_labels = aa_rn[best_idx],  # mapped back to one-letter AA codes
+    best_cost = best_cost,
+    history = history,
+    T0 = T0
+  )
+}
+
+# --------- Run SA from SGC labeling and compare to baseline -------------------
+cat(sprintf("SGC baseline cost (recomputed): %.3f\n", cost_full(labels_to_idx(A_ids))))
+
+sa_res <- sa_optimize_code(
+  A_labels = A_ids,     # SGC labeling over the 61 sense codon positions
+  iters = 1000000,       # adjust to your time budget (e.g., 1e5 – 5e5)
+  T0 = NULL,            # auto-calibrated
+  Tf = 1e-3,
+  alpha_cool = 0.9997,
+  seed = 42,
+  report_every = 2000
+)
+
+cat(sprintf("Best SA cost = %.3f (SGC = %.3f)\n", sa_res$best_cost, SGC_cost))
+
+# --------- Degeneracy preservation check -------------------------------------
+best_A <- sa_res$best_labels
+stopifnot(sort(table(best_A)) == sort(table(A_ids)))  # identical multiset of AAs (degeneracy)
+
+# --------- Build a 64-codon mapping (STOP codons kept fixed) -----------------
+code64 <- SGC %>%
+  dplyr::mutate(
+    A_Final = dplyr::if_else(
+      toupper(AminoAcid) == "STOP",
+      "STOP",
+      # align sense codons to sa_res in SGC_sense order
+      sa_res$best_labels[match(Codon, SGC_sense$Codon)]
+    )
+  )
+
+# Constraint checks (Mode A): 20 AAs present at least once; at least one STOP
+aa_present <- sort(unique(code64$A_Final[code64$A_Final != "STOP"]))
+stopifnot(length(aa_present) == 20)
+stopifnot(any(code64$A_Final == "STOP"))
+
+# --------- Component breakdown for SA-best (D_ts / D_tv) ---------------------
+split_cost <- function(label_idx) {
+  d <- aa_dist[cbind(label_idx[edge_i], label_idx[edge_j])]
+  c(
+    D_ts = sum(d[edge_is_ts]),
+    D_tv = sum(d[!edge_is_ts])
+  )
+}
+best_split <- split_cost(labels_to_idx(best_A))
+cat(sprintf("SA-best components: D_ts=%.3f, D_tv=%.3f; alpha=%.6f\n",
+            best_split["D_ts"], best_split["D_tv"], alpha))
+
+# --------- Convergence plot ---------------------------------------------------
+if (nrow(sa_res$history) > 0) {
+  conv_plot <- ggplot2::ggplot(sa_res$history, ggplot2::aes(x = step, y = best_cost)) +
+    ggplot2::geom_line(color = "steelblue") +
+    ggplot2::geom_hline(yintercept = SGC_cost, color = "red", linetype = "dashed") +
+    ggplot2::labs(title = "Simulated Annealing Convergence (Mode A)",
+                  x = "Iteration", y = "Best cost (D_ts + α·D_tv)") +
+    ggplot2::theme_minimal()
+  ggplot2::ggsave("SA_convergence.png", conv_plot, width = 7, height = 4.5)
+}
+
+# --------- Histogram overlay: random vs SGC vs SA-best -----------------------
+hist_plot <- ggplot2::ggplot(tibble::tibble(cost = random_costs), ggplot2::aes(x = cost)) +
+  ggplot2::geom_histogram(fill = "lightblue", color = "white", bins = 40) +
+  ggplot2::geom_vline(xintercept = SGC_cost, color = "red", size = 1) +
+  ggplot2::geom_vline(xintercept = sa_res$best_cost, color = "darkgreen", size = 1) +
+  ggplot2::annotate("text", x = SGC_cost, y = Inf, label = sprintf("SGC = %.1f", SGC_cost),
+                    vjust = 2, hjust = -0.05, color = "red") +
+  ggplot2::annotate("text", x = sa_res$best_cost, y = Inf,
+                    label = sprintf("SA best = %.1f", sa_res$best_cost),
+                    vjust = 4, hjust = -0.05, color = "darkgreen") +
+  ggplot2::labs(title = "Random Code Cost Distribution with SGC & SA Optimum",
+                x = "Code Cost", y = "Count") +
+  ggplot2::theme_minimal()
+ggplot2::ggsave("Histogram_random_vs_SA.png", hist_plot, width = 7, height = 4.5)
+
+# --------- Save artifacts -----------------------------------------------------
+readr::write_csv(code64 %>% dplyr::select(Codon, A_Final), "optimized_code_64.csv")
+optimized_code <- SGC_sense %>% dplyr::mutate(A_Optim = best_A) %>% dplyr::select(Codon, A_SGC = A, A_Optim)
+readr::write_csv(optimized_code, "optimized_code_mapping.csv")
+saveRDS(sa_res, "sa_result.rds")
+
+cat("SA optimization complete (Mode A).\nSaved: optimized_code_64.csv, optimized_code_mapping.csv, sa_result.rds, SA_convergence.png, Histogram_random_vs_SA.png\n")
+
+```
+
+Conclusion: After running the Rscript to compare the Benchmark Standrd Genetic Code (Protein Sequencing) to Randomly Generated Codes (Protein Sequencing).
+It returned;
+SGC = 9856.116,
+Mean random code cost = 14314.596 
+SGC code cost - Random code cost = 4458.48, 
+SGC code cost is approximately 68.85% better than the Random code cost.
+
+Using the formula below:
+(i→j) ∑wij d(ai X aj)
+where each edge (i→j) is a one-base mutation from codon i to codon j
+ai,aj are the Amino Acids coded by those codons.
+d(⋅,⋅) is the entry from your amino‑acid distance matrix aa_dist
+wij=1 for transitions and =α= \alpha=α for transversions. 
+      
+Interpretation: A lower cost means that single‑base errors (or mutations) more often mapped to chemically similar Amino Acids is more error‑robust under chosen distance measure and weighting.The SGC code cost was approximately 68.58% better than the Random code cost. Which means that the naturally formed Standard Genetic Code is arranged in a way that it results in the least amount of mutations, making it more efficient than the randomly generated code. 
+
+However, after computing a Stimulated Annealing experiment on the codes, the Rscript returned the following result:
+A SD cost of 9570.291, which means in comparison to the SGC with 9856.116, there was an improvement by:
+9856.116 − 9570.291 = 285.825
+A percent improvement: approximately 2.90%. This was unexpected as it was quite easy to find the codes to compute this experiment. I also made some iterations to the function by running iters = 1000000, with alpha_cool = 0.9997.
+This computational experiment proves it is theoretically possible to further minimze Amino Acid mutation, so that more similar Amino Acids would have similar codons, however there might be some disadvantages to this in reality. Nonetheless, experimenting with a real life biological example is the only way to truly know if it is really better in reality.  
 
