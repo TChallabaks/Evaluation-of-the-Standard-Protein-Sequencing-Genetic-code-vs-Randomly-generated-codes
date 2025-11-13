@@ -697,10 +697,10 @@ cat(sprintf("SGC baseline cost (recomputed): %.3f\n", cost_full(labels_to_idx(A_
 
 sa_res <- sa_optimize_code(
   A_labels = A_ids,     # SGC labeling over the 61 sense codon positions
-  iters = 1000000,       # adjust to your time budget (e.g., 1e5 – 5e5)
+  iters = 200000,       # adjust to your time budget (e.g., 1e5 – 5e5)
   T0 = NULL,            # auto-calibrated
   Tf = 1e-3,
-  alpha_cool = 0.9997,
+  alpha_cool = 0.9995,
   seed = 42,
   report_every = 2000
 )
@@ -792,8 +792,8 @@ wij=1 for transitions and =α= \alpha=α for transversions.
 Interpretation: A lower cost means that single‑base errors (or mutations) more often mapped to chemically similar Amino Acids is more error‑robust under chosen distance measure and weighting.The SGC code cost was approximately 68.58% better than the Random code cost. Which means that the naturally formed Standard Genetic Code is arranged in a way that it results in the least amount of mutations, making it more efficient than the randomly generated code. 
 
 However, after computing a Stimulated Annealing experiment on the codes, the Rscript returned the following result:
-A SD cost of 9570.291, which means in comparison to the SGC with 9856.116, there was an improvement by:
-9856.116 − 9570.291 = 285.825
-A percent improvement: approximately 2.90%. This was unexpected as it was quite easy to find the codes to compute this experiment. I also made some iterations to the function by running iters = 1000000, with alpha_cool = 0.9997.
+A Stimulated Annealing cost of 9493.008, which means in comparison to the SGC with 9856.116, there was an improvement by:
+9856.116 − 9493.008 = 363.108/9856.116 * 100 = 3.68%
+This was unexpected as it was quite easy to find the codes to compute this experiment. I also made some iterations to the function by running iters = 200000, with alpha_cool = 0.9995.
 This computational experiment proves it is theoretically possible to further minimze Amino Acid mutation, so that more similar Amino Acids would have similar codons, however there might be some disadvantages to this in reality. Nonetheless, experimenting with a real life biological example is the only way to truly know if it is really better in reality.  
 
